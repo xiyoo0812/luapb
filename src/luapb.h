@@ -7,8 +7,9 @@
 #include "lua_kit.h"
 
 using namespace std;
+using namespace luakit;
 
-namespace luakit{
+namespace luapb{
     const uint32_t HOLD_OFFSET = 10;
     enum class wiretype : uint8_t {
         VARINT          = 0,    //int32, int64, uint32, uint64, sint32, sint64, bool, enum
@@ -75,13 +76,14 @@ namespace luakit{
 
     template<typename T>
     size_t encode_sint(T val) {
-    return (val << 1) ^ -(val < 0);
+        return (val << 1) ^ -(val < 0);
     }
 
     template<typename T>
     T read_varint(slice* slice) {
         size_t len = 0;
         auto head = slice->data(&len);
+        if (len == 0) throw length_error("length error");
         //小数直接返回
         T result = 0;
         if ((*head & 0x80) == 0) {
@@ -119,10 +121,9 @@ namespace luakit{
 
     template<typename T>
     T read_fixtype(slice* slice) {
-        size_t len = 0;
-        auto data = slice->erase(sizeof(T));
+        auto data = slice->read<T>();
         if (data == nullptr) throw length_error("length error");
-        return *(T*)data;
+        return *data;
     }
 
     template<typename T>
@@ -137,6 +138,12 @@ namespace luakit{
         return string(data, length);
     }
 
+    void write_string(luabuf* buf, string_view value) {
+        uint32_t length = value.size();
+        write_varint(buf, length);
+        buf->push_data((uint8_t*)value.data(), length);
+    }
+
     slice read_len_prefixed(slice* slice) {
         uint32_t length = read_varint<uint32_t>(slice);
         auto data = slice->erase(length);
@@ -144,20 +151,14 @@ namespace luakit{
         return luakit::slice(data, length);
     }
 
-    void write_string(luabuf* buf, string_view value) {
-        uint32_t length = value.size();
-        write_varint(buf, length);
-        buf->push_data((uint8_t*)value.data(), length);
-    }
-
     void write_len_prefixed(luabuf* buf, slice* lslice) {
         uint32_t length = lslice->size();
         write_varint(buf, length);
-        buf->push_data(lslice->head(), length);
+        if (buf->push_data(lslice->head(), length) == 0) throw length_error("length error");
     }
 
     void write_field_type(luabuf* buf, int field_num, field_type type) {
-        auto value = ((field_num << 3) | (((uint32_t)wiretype_by_fieldtype(type)) & 7));
+        auto value = (field_num << 3) | (((uint32_t)wiretype_by_fieldtype(type)) & 7);
         write_varint(buf, value);
     }
 
@@ -175,13 +176,13 @@ namespace luakit{
     class pb_enum {
     public:
         string name;
-        unordered_map<string_view, int32_t> kvpair;
-        unordered_map<int32_t, string_view> vkpair;
+        unordered_map<string, int32_t> kvpair;
+        unordered_map<int32_t, string> vkpair;
     };
 
     class pb_field;
     using pb_field_imap = unordered_map<int32_t, pb_field*>;
-    using pb_field_smap = unordered_map<string_view, pb_field*>;
+    using pb_field_smap = unordered_map<string, pb_field*>;
     class pb_message {
     public:
         string name;
@@ -195,9 +196,13 @@ namespace luakit{
     class pb_descriptor {
     public:
         string syntax;
-        unordered_map<string, pb_enum*> enums;
-        unordered_map<string, pb_message*> messages;
-        ~pb_descriptor();
+        map<string, pb_enum*> enums;
+        map<string, pb_message*> messages;
+        void clean() {
+            for (auto& [_, e] : enums) delete e;
+            for (auto& [_, m] : messages) delete m;
+        }
+        ~pb_descriptor() { clean(); }
     };
     static pb_descriptor descriptor;
 
@@ -230,14 +235,14 @@ namespace luakit{
         bool is_map() { return get_message() && message->is_map; }
         pb_message* get_message() {
             if (message) return message;
-            if (label == 3 && !type_name.empty() && type == field_type::TYPE_MESSAGE) {
+            if (type == field_type::TYPE_MESSAGE && !type_name.empty()) {
                 message = find_message(type_name);
             }
             return message;
         }
         pb_enum* get_enum() {
             if (penum) return penum;
-            if (label == 3 && !type_name.empty() && type == field_type::TYPE_ENUM) {
+            if (type == field_type::TYPE_ENUM && !type_name.empty()) {
                 penum = find_enum(type_name);
             }
             return penum;
@@ -246,11 +251,6 @@ namespace luakit{
 
     pb_message::~pb_message() {
         for (auto& [_, f] : fields) delete f;
-    }
-
-    pb_descriptor::~pb_descriptor() { 
-        for (auto& [_, e] : enums) delete e;
-        for (auto& [_, m] : messages) delete m;
     }
 
     pb_field* find_field_by_number(pb_message* msg, uint32_t field_num) {
@@ -263,7 +263,7 @@ namespace luakit{
         return find_field_by_number(msg, tag >> 3);
     }
 
-    pb_field* find_field(pb_message* msg, string_view name) {
+    pb_field* find_field(pb_message* msg, string name) {
         auto it = msg->sfields.find(name);
         if (it != msg->sfields.end()) return it->second;
         return nullptr;
@@ -428,18 +428,25 @@ namespace luakit{
     }
 
     void encode_message(lua_State* L, luabuf* buff, pb_message* msg) {
-        size_t len;
         lua_pushnil(L);
+        bool oneofencode = false;
         while (lua_next(L, -2) != 0) {
             if (lua_isstring(L, -2)) {
-                auto name = lua_tolstring(L, -2, &len);
-                pb_field* field = find_field(msg, string_view(name, len));
+                pb_field* field = find_field(msg, lua_tostring(L, -2));
                 if (field) {
                     if (field->is_map()) {
                         encode_map(L, buff, field, -1);
                     } else if (field->is_repeated()) {
                         encode_repeated(L, buff, field, -1);
                     } else {
+                        //oneof处理, 编码一个
+                        if (field->oneof_index >= 0) {
+                            if (oneofencode) {
+                                lua_pop(L, 1);
+                                continue;
+                            }
+                            oneofencode = true;
+                        }
                         write_field_type(buff, field->number, field->type);
                         encode_field(L, buff, field, -1);
                     }
@@ -570,6 +577,7 @@ namespace luakit{
     }
 
     void read_file_descriptor_set(slice* slice) {
+        descriptor.clean();
         while (!slice->empty()) {
             uint32_t tag = read_varint<uint32_t>(slice);
             switch (tag) {
@@ -577,5 +585,28 @@ namespace luakit{
                 default: skip_field(slice, tag); break;
             }
         }
+    }
+
+    
+    int pb_clear(lua_State* L) {
+        descriptor.clean();
+        return 0;
+    }
+
+    int pb_enums(lua_State* L) {
+        vector<string> enums;
+        for (auto& e : descriptor.enums) {
+            enums.emplace_back(e.first);
+        }
+        return luakit::variadic_return(L, enums);
+    }
+
+
+    int pb_messages(lua_State* L) {
+        map<string, string> messages;
+        for (auto& e : descriptor.messages) {
+            messages.emplace(e.first, e.second->name);
+        }
+        return luakit::variadic_return(L, messages);
     }
 }
