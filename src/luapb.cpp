@@ -94,6 +94,7 @@ namespace luapb {
         luapb.set_function("encode", pb_encode);
         luapb.set_function("loadfile", load_file);
         luapb.set_function("messages", pb_messages);
+        return luapb;
     }
 }
 

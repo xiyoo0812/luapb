@@ -19,8 +19,10 @@
 - 性能：lua-protobuf性能对比，测试不是很充分，仅做参考，release/O2编译
   | 平台 | 库  | 编译选项 | 1W次编解码    | 10W次编解码 | 100W次编解码
   |----------|-----------|-----------|-----------|--------|-----|
-  | Win11| luapb | RELEASE/O2 | 40ms   | 407ms   | 3967ms
-  | Win11| lua-protobuf | RELEASE/O2  | 80ms   | 688ms   | 6887ms
+  | Win11| luapb | -O2 | 40ms   | 407ms   | 3967ms
+  | Win11| lua-protobuf | -O2  | 80ms   | 688ms   | 6887ms
+  | Debian10| luapb | -O2 | 56ms   | 563ms   | 5637ms
+  | Debian10| lua-protobuf | -O2  | 87ms   | 867ms   | 8535ms
 
 # 用法
 
@@ -69,6 +71,7 @@ protobuf.loadfile("xxx.pb")
 --从字符串加载protobuf二进制描述文件
 local f = io.open("xxx.pb", "rb")
 local data = f:read("*a")
+protobuf.load(data)
 f:close()
 
 --查询所有枚举
@@ -105,9 +108,9 @@ local tpb_data = {
 
 --message编码解码
 local tpb_str = pbencode("ncmd_cs.test_message", tpb_data)
-log_dump("pb encode: {}", #tpb_str)
+log_debug("pb encode: {}", #tpb_str)
 local tdata = pbdecode("ncmd_cs.test_message", tpb_str)
-log_dump("pb decode:{}", tdata)
+log_debug("pb decode:{}", tdata)
 
 --清理pb描述
 protobuf.clear()
