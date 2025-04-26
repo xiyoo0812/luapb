@@ -9,7 +9,18 @@ namespace luapb {
 
     thread_local std::map<uint32_t, pb_message*>    pb_cmd_ids;
     thread_local std::map<std::string, pb_message*> pb_cmd_names;
-    thread_local std::map<std::string, uint32_t> pb_cmd_indexs;
+    thread_local std::map<std::string, uint32_t>    pb_cmd_indexs;
+
+    #pragma pack(1)
+    struct pb_header {
+        uint16_t    len;            // 整个包的长度
+        uint8_t     flag;           // 标志位
+        uint8_t     type;           // 消息类型
+        uint16_t    cmd_id;         // 协议ID
+        uint16_t    session_id;     // sessionId
+        uint8_t     crc8;           // crc8
+    };
+    #pragma pack()
 
     pb_message* pbmsg_from_cmdid(size_t cmd_id) {
         auto it = pb_cmd_ids.find(cmd_id);
@@ -44,6 +55,81 @@ namespace luapb {
         return nullptr;
     }
 
+    class pbcodec : public codec_base {
+    public:
+        virtual int load_packet(size_t data_len) {
+            if (!m_slice) return 0;
+            pb_header* header =(pb_header*)m_slice->peek(sizeof(pb_header));
+            if (!header) return 0;
+            m_packet_len = header->len;
+            if (m_packet_len < sizeof(pb_header)) return -1;
+            if (m_packet_len >= 0xffff) return -1;
+            if (!m_slice->peek(m_packet_len)) return 0;
+            if (m_packet_len > data_len) return 0;
+            return m_packet_len;
+        }
+
+        virtual uint8_t* encode(lua_State* L, int index, size_t* len) {
+            //header
+            pb_header header;
+            //session_id
+            header.session_id = (lua_tointeger(L, index++) & 0xffff);
+            //cmdid
+            pb_message* msg = pbmsg_from_stack(L, index++, &header.cmd_id);
+            if (msg == nullptr) luaL_error(L, "invalid pb cmd type");
+            //other
+            header.flag = (uint8_t)lua_tointeger(L, index++);
+            header.type = (uint8_t)lua_tointeger(L, index++);
+            header.crc8 = (uint8_t)lua_tointeger(L, index++);
+            //encode
+            auto buf = luakit::get_buff();
+            buf->clean();
+            lua_pushvalue(L, index);
+            try {
+                encode_message(L, buf, msg);
+            } catch (const exception& e) {
+                luaL_error(L, e.what());
+            }
+            *len =  buf->size();
+            header.len = *len;
+            return buf->head();
+        }
+
+        virtual size_t decode(lua_State* L) {
+            //header
+            pb_header* header = (pb_header*)m_slice->erase(sizeof(pb_header));
+            //return
+            int top = lua_gettop(L);
+            lua_pushinteger(L, m_slice->size());
+            lua_pushinteger(L, header->session_id);
+            lua_pushinteger(L, header->cmd_id);
+            lua_pushinteger(L, header->flag);
+            lua_pushinteger(L, header->type);
+            lua_pushinteger(L, header->crc8);
+            //cmd_id
+            pb_message* msg = pbmsg_from_cmdid(header->cmd_id);
+            if (msg == nullptr) {
+                return lua_gettop(L) - top;
+            }
+            //decode
+            lua_push_function(L, [&](lua_State* L) {
+                decode_message(L, m_slice, msg);
+                return 1;
+            });
+            if (lua_pcall(L, 0, 1, 0)) {
+                lua_pushnil(L);
+                lua_insert(L, -2);
+            }
+            return lua_gettop(L) - top;
+        }
+    };
+    
+    inline codec_base* pb_codec() {
+        pbcodec* codec = new pbcodec();
+        codec->set_buff(luakit::get_buff());
+        return codec;
+    }
+
     int load_pb(lua_State* L) {
         size_t len;
         auto data = (uint8_t*)lua_tolstring(L, 1, &len);
@@ -70,10 +156,10 @@ namespace luapb {
 
 
     int pb_encode(lua_State* L) {
-        auto buf = luakit::get_buff();
-        buf->clean();
         auto msg = pbmsg_from_stack(L, 1);
         if (msg == nullptr) luaL_error(L, "invalid pb cmd type");
+        auto buf = luakit::get_buff();
+        buf->clean();
         try {
             encode_message(L, buf, msg);
         } catch (const exception& e){
@@ -128,6 +214,7 @@ namespace luapb {
         luapb.set_function("clear", pb_clear);
         luapb.set_function("decode", pb_decode);
         luapb.set_function("encode", pb_encode);
+        luapb.set_function("pbcodec", pb_codec);
         luapb.set_function("loadfile", load_file);
         luapb.set_function("messages", pb_messages);
         luapb.set_function("bind_cmd", [](uint32_t cmd_id, std::string name, std::string fullname) {
