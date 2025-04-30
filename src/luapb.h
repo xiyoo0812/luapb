@@ -49,7 +49,7 @@ namespace luapb{
     wiretype wiretype_by_fieldtype(field_type t) {
         switch (t) {
         case field_type::TYPE_FLOAT:    return wiretype::I64;
-        case field_type::TYPE_INT64:    return wiretype::I32;
+        case field_type::TYPE_INT64:    return wiretype::VARINT;
         case field_type::TYPE_UINT64:   return wiretype::VARINT;
         case field_type::TYPE_INT32:    return wiretype::VARINT;
         case field_type::TYPE_FIXED64:  return wiretype::I64;
@@ -375,8 +375,8 @@ namespace luapb{
             int len = lua_rawlen(L, -1);
             decode_field(L, slice, field);
             lua_rawseti(L, -2, len + 1);
-            lua_pop(L, 1);
         }
+        lua_pop(L, 1);
     }
 
     void decode_message(lua_State* L, slice* slice, pb_message* msg) {
