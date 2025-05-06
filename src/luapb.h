@@ -48,7 +48,8 @@ namespace luapb{
 
     wiretype wiretype_by_fieldtype(field_type t) {
         switch (t) {
-        case field_type::TYPE_FLOAT:    return wiretype::I64;
+        case field_type::TYPE_DOUBLE:   return wiretype::I64;
+        case field_type::TYPE_FLOAT:    return wiretype::I32;
         case field_type::TYPE_INT64:    return wiretype::VARINT;
         case field_type::TYPE_UINT64:   return wiretype::VARINT;
         case field_type::TYPE_INT32:    return wiretype::VARINT;
@@ -203,6 +204,8 @@ namespace luapb{
         void clean() {
             for (auto& [_, e] : enums) delete e;
             for (auto& [_, m] : messages) delete m;
+            messages.clear();
+            enums.clear();
         }
         ~pb_descriptor() { clean(); }
     };
