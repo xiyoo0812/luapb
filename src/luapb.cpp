@@ -1,5 +1,7 @@
 #define LUA_LIB
 
+#include <filesystem>
+
 #include "luapb.h"
 
 using namespace std;
@@ -112,12 +114,9 @@ namespace luapb {
             if (msg == nullptr) {
                 throw lua_exception("pb message not define cmd: %d", header->cmd_id);
             }
-            //decode
-            lua_push_function(L, [&](lua_State* L) {
+            try {
                 decode_message(L, m_slice, msg);
-                return 1;
-            });
-            if (lua_pcall(L, 0, 1, 0)) {
+            } catch (const exception& e) {
                 throw lua_exception("decode pb cmdid: %d failed: %s", header->cmd_id, lua_tostring(L, -1));
             }
             return lua_gettop(L) - top;
@@ -214,6 +213,7 @@ namespace luapb {
         luapb.set_function("decode", pb_decode);
         luapb.set_function("encode", pb_encode);
         luapb.set_function("pbcodec", pb_codec);
+        luapb.set_function("fields", pb_fields);
         luapb.set_function("loadfile", load_file);
         luapb.set_function("messages", pb_messages);
         luapb.set_function("bind_cmd", [](uint32_t cmd_id, std::string name, std::string fullname) {

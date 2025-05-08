@@ -86,7 +86,7 @@ namespace luapb{
     T read_varint(slice* slice) {
         size_t len = 0;
         auto head = slice->data(&len);
-        if (len == 0) throw length_error("length error");
+        if (len == 0) throw length_error("read_varint buffer length not engugh");
         //小数直接返回
         T result = 0;
         if ((*head & 0x80) == 0) {
@@ -98,7 +98,7 @@ namespace luapb{
         // ceil(bits/7)
         constexpr size_t max_bytes = (sizeof(T) * 8 + 6) / 7;
         for (size_t i = 0; i < max_bytes; ++i) {
-            if (i >= len) throw length_error("length error");
+            if (i >= len) throw length_error("read_varint buffer length not engugh");
             uint8_t byte = *head++;
             result |= static_cast<T>(byte & 0x7F) << (i * 7);
             if ((byte & 0x80) == 0) {
@@ -106,24 +106,28 @@ namespace luapb{
                 return result;
             }
         }
-        throw length_error("struct error");
+        throw length_error("read_varint invalid binrary");
     }
 
     template<typename T>
     void write_varint(luabuf* buf, T val) {
+        using unsignedt = typename std::make_unsigned<T>::type;
+        unsignedt uval = static_cast<unsignedt>(val);
         do {
-            uint8_t byte = static_cast<uint8_t>(val & 0x7F);
-            val >>= 7;
+            uint8_t byte = static_cast<uint8_t>(uval & 0x7F);
+            uval >>= 7;
             //设置最高位表示还有后续字节
-            if (val != 0) byte |= 0x80;
-            if (buf->push_data(&byte, 1) == 0) throw length_error("length error");
-        } while (val != 0);
+            if (uval != 0) byte |= 0x80;
+            if (buf->push_data(&byte, 1) == 0) {
+                throw lua_exception("write_varint buffer overflow");
+            }
+        } while (uval != 0);
     }
 
     template<typename T>
     T read_fixtype(slice* slice) {
         auto data = slice->read<T>();
-        if (data == nullptr) throw length_error("length error");
+        if (data == nullptr) throw length_error("read_fixtype buffer length not engugh");
         return *data;
     }
 
@@ -135,7 +139,7 @@ namespace luapb{
     string read_string(slice* slice) {
         uint32_t length = read_varint<uint32_t>(slice);
         const char* data = (const char*)slice->erase(length);
-        if (data == nullptr) throw length_error("length error");
+        if (data == nullptr) throw length_error("read_string buffer length not engugh");
         return string(data, length);
     }
 
@@ -148,7 +152,7 @@ namespace luapb{
     slice read_len_prefixed(slice* slice) {
         uint32_t length = read_varint<uint32_t>(slice);
         auto data = slice->erase(length);
-        if (data == nullptr) throw length_error("length error");
+        if (data == nullptr) throw length_error("read_len_prefixed buffer length not engugh");
         return luakit::slice(data, length);
     }
 
@@ -156,7 +160,9 @@ namespace luapb{
         uint32_t length = lslice ? lslice->size() : 0;
         write_varint(buf, length);
         if (length > 0) {
-            if (buf->push_data(lslice->head(), length) == 0) throw length_error("length error");
+            if (buf->push_data(lslice->head(), length) == 0) {
+                throw lua_exception("write_len_prefixed buffer overflow");
+            }
         }
     }
 
@@ -172,7 +178,7 @@ namespace luapb{
             case wiretype::I64: read_fixtype<int64_t>(slice); break;
             case wiretype::I32: read_fixtype<int32_t>(slice); break;
             case wiretype::LEN: read_len_prefixed(slice); break;
-            default: throw length_error("struct error");
+            default: throw length_error("skip_field invalid wiretype");
         }
     }
 
@@ -277,9 +283,14 @@ namespace luapb{
     void fill_message(lua_State* L, pb_message* msg) {
         lua_createtable(L, 0, msg->fields.size());
         for (auto& [name, field] : msg->sfields) {
+            auto bmap = field->is_map(), brepeated = field->is_repeated();
+            if (brepeated || bmap) {
+                lua_createtable(L, brepeated ? 4 : 0, bmap ? 4 : 0);
+                lua_setfield(L, -2, name.c_str());
+                continue;
+            }
             switch (field->type) {
                 case field_type::TYPE_ENUM:
-                case field_type::TYPE_FLOAT:
                 case field_type::TYPE_INT32:
                 case field_type::TYPE_INT64:
                 case field_type::TYPE_SINT32:
@@ -290,12 +301,18 @@ namespace luapb{
                 case field_type::TYPE_FIXED64:
                 case field_type::TYPE_SFIXED32:
                 case field_type::TYPE_SFIXED64: {
+                    lua_pushinteger(L, 0);
+                    lua_setfield(L, -2, name.c_str());
+                    break;
+                }
+                case field_type::TYPE_DOUBLE:
+                case field_type::TYPE_FLOAT: {
                     lua_pushnumber(L, 0);
                     lua_setfield(L, -2, name.c_str());
                     break;
                 }
                 case field_type::TYPE_BOOL: {
-                    lua_pushboolean(L, 1);
+                    lua_pushboolean(L, 0);
                     lua_setfield(L, -2, name.c_str());
                     break;
                 }
@@ -303,17 +320,6 @@ namespace luapb{
                 case field_type::TYPE_STRING: {
                     lua_pushstring(L, "");
                     lua_setfield(L, -2, name.c_str());
-                    break;
-                }
-                case field_type::TYPE_MESSAGE: {
-                    if (field->is_repeated()) {
-                        lua_createtable(L, 4, 0);
-                        lua_setfield(L, -2, name.c_str());
-                    }
-                    if (field->is_map()) {
-                        lua_createtable(L, 0, 4);
-                        lua_setfield(L, -2, name.c_str());
-                    }
                     break;
                 }
             }
@@ -327,16 +333,17 @@ namespace luapb{
             case field_type::TYPE_DOUBLE: lua_pushnumber(L, read_fixtype<double>(slice)); break;
             case field_type::TYPE_FIXED32: lua_pushinteger(L, read_fixtype<int32_t>(slice)); break;
             case field_type::TYPE_FIXED64: lua_pushinteger(L, read_fixtype<int64_t>(slice)); break;
-            case field_type::TYPE_BOOL: lua_pushboolean(L, read_varint<int32_t>(slice)); break;
-            case field_type::TYPE_INT32: lua_pushinteger(L, read_varint<int32_t>(slice)); break;
-            case field_type::TYPE_UINT32: lua_pushinteger(L, read_varint<uint32_t>(slice)); break;
+            case field_type::TYPE_BOOL: lua_pushboolean(L, read_varint<uint32_t>(slice)); break;
+            // TYPE_INT32在负数的时候，会被扩展位uint64编码，因此使用int64_t去解码
+            case field_type::TYPE_INT32: lua_pushinteger(L, read_varint<int64_t>(slice)); break;
             case field_type::TYPE_INT64: lua_pushinteger(L, read_varint<int64_t>(slice)); break;
+            case field_type::TYPE_UINT32: lua_pushinteger(L, read_varint<uint32_t>(slice)); break;
             case field_type::TYPE_UINT64: lua_pushinteger(L, read_varint<uint64_t>(slice)); break;
             case field_type::TYPE_SINT32: lua_pushinteger(L, decode_sint(read_varint<uint32_t>(slice))); break;
             case field_type::TYPE_SINT64: lua_pushinteger(L, decode_sint(read_varint<uint64_t>(slice))); break;
             case field_type::TYPE_SFIXED32: lua_pushinteger(L, decode_sint(read_fixtype<uint64_t>(slice))); break;
             case field_type::TYPE_SFIXED64: lua_pushinteger(L, decode_sint(read_fixtype<uint64_t>(slice))); break;
-            case field_type::TYPE_ENUM: lua_pushinteger(L, read_varint<int32_t>(slice)); break;
+            case field_type::TYPE_ENUM: lua_pushinteger(L, read_varint<uint32_t>(slice)); break;
             case field_type::TYPE_MESSAGE: {
                 auto mslice = read_len_prefixed(slice);
                 decode_message(L, &mslice, field->get_message());
@@ -348,7 +355,7 @@ namespace luapb{
                 lua_pushlstring(L, s.c_str(), s.size());
                 break;
             }
-            default: throw length_error("struct error");
+            default: throw length_error("decode_field invalid field_type");
         }
     }
 
@@ -418,20 +425,21 @@ namespace luapb{
             case field_type::TYPE_DOUBLE: write_fixtype<double>(buff, lua_tonumber(L, index)); break;
             case field_type::TYPE_FIXED32: write_fixtype<int32_t>(buff, lua_tointeger(L, index)); break;
             case field_type::TYPE_FIXED64: write_fixtype<int64_t>(buff, lua_tointeger(L, index)); break;
-            case field_type::TYPE_BOOL: write_varint<int32_t>(buff, lua_toboolean(L, index)); break;
-            case field_type::TYPE_INT32: write_varint<int32_t>(buff, lua_tointeger(L, index)); break;
+            case field_type::TYPE_BOOL: write_varint<uint32_t>(buff, lua_toboolean(L, index)); break;
+            //int32, int64的负数会被视为 64 位无符号整数，因此使用uint64_t去生成varint
+            case field_type::TYPE_INT32: write_varint<uint64_t>(buff, lua_tointeger(L, index)); break;
+            case field_type::TYPE_INT64: write_varint<uint64_t>(buff, lua_tointeger(L, index)); break;
             case field_type::TYPE_UINT32: write_varint<uint32_t>(buff, lua_tointeger(L, index)); break;
-            case field_type::TYPE_INT64: write_varint<int64_t>(buff, lua_tointeger(L, index)); break;
             case field_type::TYPE_UINT64: write_varint<uint64_t>(buff, lua_tointeger(L, index)); break;
-            case field_type::TYPE_SINT32: write_varint<int32_t>(buff, encode_sint(lua_tointeger(L, index))); break;
-            case field_type::TYPE_SINT64: write_varint<int64_t>(buff, encode_sint(lua_tointeger(L, index))); break;
-            case field_type::TYPE_SFIXED32: write_fixtype<int32_t>(buff, encode_sint(lua_tointeger(L, index))); break;
-            case field_type::TYPE_SFIXED64: write_fixtype<int32_t>(buff, encode_sint(lua_tointeger(L, index))); break;
-            case field_type::TYPE_ENUM: write_varint<int32_t>(buff, lua_tointeger(L, index)); break;
+            case field_type::TYPE_SINT32: write_varint<uint32_t>(buff, encode_sint(lua_tointeger(L, index))); break;
+            case field_type::TYPE_SINT64: write_varint<uint64_t>(buff, encode_sint(lua_tointeger(L, index))); break;
+            case field_type::TYPE_SFIXED32: write_fixtype<uint32_t>(buff, encode_sint(lua_tointeger(L, index))); break;
+            case field_type::TYPE_SFIXED64: write_fixtype<uint64_t>(buff, encode_sint(lua_tointeger(L, index))); break;
+            case field_type::TYPE_ENUM: write_varint<uint32_t>(buff, lua_tointeger(L, index)); break;
             case field_type::TYPE_MESSAGE: {
                 size_t base = buff->hold_place(HOLD_OFFSET);
                 encode_message(L, buff, field->get_message());
-                slice* slice = buff->truncature(base, HOLD_OFFSET);
+                slice* slice = buff->free_place(base, HOLD_OFFSET);
                 write_len_prefixed(buff, slice);
                 break;
             }
@@ -442,7 +450,7 @@ namespace luapb{
                 write_string(buff, string_view(s, len));
                 break;
             }
-            default: luaL_error(L, "encode failed: %s use unsuppert field type!", field->name);
+            default: throw lua_exception("encode failed: %s use unsuppert field type!", field->name);
         }
     }
 
@@ -459,7 +467,7 @@ namespace luapb{
             pb_field* vfield = find_field_by_number(message, 2);
             write_field_type(buff, vfield->number, vfield->type);
             encode_field(L, buff, vfield, -1);
-            slice* slice = buff->truncature(base, HOLD_OFFSET);
+            slice* slice = buff->free_place(base, HOLD_OFFSET);
             write_len_prefixed(buff, slice);
             lua_pop(L, 1);
         }
@@ -475,7 +483,7 @@ namespace luapb{
                 encode_field(L, buff, field, -1);
                 lua_pop(L, 1);
             }
-            slice* slice = buff->truncature(base, HOLD_OFFSET);
+            slice* slice = buff->free_place(base, HOLD_OFFSET);
             write_len_prefixed(buff, slice);
         } else {
             for (int i = 1; i <= rawlen; ++i) {
@@ -551,8 +559,7 @@ namespace luapb{
             uint32_t tag = read_varint<uint32_t>(&oslice);
             switch (tag) {
                 case pb_tag(2, wiretype::VARINT): {
-                    auto packed = read_varint<uint32_t>(&oslice);
-                    field->packed = packed > 0 ? true : (field->label == 3 && descriptor.syntax == "proto3");
+                    field->packed = read_varint<uint32_t>(&oslice);
                     break;
                 }
                 default: skip_field(&oslice, tag); break;
@@ -600,7 +607,7 @@ namespace luapb{
             }
         }
         //Only repeated fields of primitive numeric types (types which use the varint, 32-bit, or 64-bit wire types) can be declared as packed.
-        if (wiretype_by_fieldtype(field->type) == wiretype::LEN) field->packed = false;
+        field->packed = (wiretype_by_fieldtype(field->type) != wiretype::LEN) && (field->packed || (field->label == 3 && descriptor.syntax == "proto3"));
         msg->fields.emplace(field->number, field);
         msg->sfields.emplace(field->name, field);
     }
@@ -655,17 +662,28 @@ namespace luapb{
 
     int pb_enums(lua_State* L) {
         vector<string> enums;
-        for (auto& e : descriptor.enums) {
-            enums.emplace_back(e.first);
+        for (auto& [name, _] : descriptor.enums) {
+            enums.emplace_back(name);
         }
         return luakit::variadic_return(L, enums);
     }
 
     int pb_messages(lua_State* L) {
         map<string, string> messages;
-        for (auto& e : descriptor.messages) {
-            messages.emplace(e.first, e.second->name);
+        for (auto& [name, message] : descriptor.messages) {
+            messages.emplace(name, message->name);
         }
         return luakit::variadic_return(L, messages);
+    }
+
+    int pb_fields(lua_State* L, string fulname) {
+        map<string, int> fields;
+        auto message = find_message(fulname);
+        if (message) {
+            for (auto& [name, field] : message->sfields) {
+                fields.emplace(name, (int)field->type);
+            }
+        }
+        return luakit::variadic_return(L, fields);
     }
 }
