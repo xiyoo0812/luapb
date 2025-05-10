@@ -1,7 +1,5 @@
 #define LUA_LIB
 
-#include <filesystem>
-
 #include "luapb.h"
 
 using namespace std;
@@ -116,7 +114,7 @@ namespace luapb {
             }
             try {
                 decode_message(L, m_slice, msg);
-            } catch (const exception& e) {
+            } catch (...) {
                 throw lua_exception("decode pb cmdid: %d failed: %s", header->cmd_id, lua_tostring(L, -1));
             }
             return lua_gettop(L) - top;
@@ -154,7 +152,8 @@ namespace luapb {
     }
 
     int pb_encode(lua_State* L) {
-        auto msg = pbmsg_from_stack(L, 1);
+        string cmd_name = lua_tostring(L, 1);
+        auto msg = find_message(cmd_name);
         if (msg == nullptr) luaL_error(L, "invalid pb cmd type");
         auto buf = luakit::get_buff();
         buf->clean();
@@ -169,9 +168,10 @@ namespace luapb {
 
     int pb_decode(lua_State* L) {
         size_t len;
+        string cmd_name = lua_tostring(L, 1);
+        auto msg = find_message(cmd_name);
         auto val = (uint8_t*)lua_tolstring(L, 2, &len);
         slice s = slice(val, len);
-        auto msg = pbmsg_from_stack(L, 1);
         try {
             decode_message(L, &s, msg);
         } catch (const exception& e) {

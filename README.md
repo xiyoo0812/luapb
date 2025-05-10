@@ -12,7 +12,7 @@
 
 # 编译
 - msvc: 准备好lua依赖库并放到指定位置，将proj文件加到sln后编译。
-- linux: 准备好lua依赖库并放到指定位置，执行make -f lsmdb.mak
+- linux: 准备好lua依赖库并放到指定位置，执行make -f luapb.mak
 
 # 其他
 - 仅支持lua5.3以上版本，proto3协议
