@@ -37,17 +37,17 @@ namespace luapb {
             return it->second;
         }
         if (lua_isstring(L, index)) {
-            string cmd_name = lua_tostring(L, index);
+            auto cmd_name = lua_tostring(L, index);
             auto it = pb_cmd_names.find(cmd_name);
             if (it == pb_cmd_names.end()) {
                 if (cmd_id == nullptr) {
                     auto msg = find_message(cmd_name);
                     if (msg == nullptr) {
-                        luaL_error(L, "invalid pb cmd_name: %s", cmd_name.c_str());
+                        luaL_error(L, "invalid pb cmd_name: %s", cmd_name);
                     }
                     return msg;
                 }
-                luaL_error(L, "invalid pb cmd_name: %s", cmd_name.c_str());
+                luaL_error(L, "invalid pb cmd_name: %s", cmd_name);
             }
             if (cmd_id) *cmd_id = pb_cmd_indexs[cmd_name];
             return it->second;
@@ -152,7 +152,7 @@ namespace luapb {
     }
 
     int pb_encode(lua_State* L) {
-        string cmd_name = lua_tostring(L, 1);
+        auto cmd_name = lua_tostring(L, 1);
         auto msg = find_message(cmd_name);
         if (msg == nullptr) luaL_error(L, "invalid pb cmd type");
         auto buf = luakit::get_buff();
@@ -168,7 +168,7 @@ namespace luapb {
 
     int pb_decode(lua_State* L) {
         size_t len;
-        string cmd_name = lua_tostring(L, 1);
+        auto cmd_name = lua_tostring(L, 1);
         auto msg = find_message(cmd_name);
         auto val = (uint8_t*)lua_tolstring(L, 2, &len);
         slice s = slice(val, len);
@@ -180,11 +180,12 @@ namespace luapb {
         return 1;
     }
 
-    int pb_enum_id(lua_State* L, string efullname) {
+    int pb_enum_id(lua_State* L) {
+        auto efullname = lua_tostring(L, 1);
         auto penum = find_enum(efullname);
         if (penum) {
             if (lua_isstring(L, 2)) {
-                string key = lua_tostring(L, 2);
+                auto key = lua_tostring(L, 2);
                 auto it = penum->kvpair.find(key);
                 if (it != penum->kvpair.end()) {
                     lua_pushinteger(L, it->second);
@@ -217,7 +218,7 @@ namespace luapb {
         luapb.set_function("loadfile", load_file);
         luapb.set_function("messages", pb_messages);
         luapb.set_function("bind_cmd", [](uint32_t cmd_id, std::string name, std::string fullname) {
-            auto message = find_message(fullname);
+            auto message = find_message(fullname.c_str());
             if (message) {
                 pb_cmd_names[name] = message;
                 pb_cmd_ids[cmd_id] = message;

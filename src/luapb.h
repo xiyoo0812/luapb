@@ -141,11 +141,11 @@ namespace luapb{
         buf->push_data((uint8_t*)&value, sizeof(T));
     }
 
-    string read_string(slice* slice) {
+    string_view read_string(slice* slice) {
         uint32_t length = read_varint<uint32_t>(slice);
         const char* data = (const char*)slice->erase(length);
         if (data == nullptr) throw length_error("read_string buffer length not engugh");
-        return string(data, length);
+        return string_view(data, length);
     }
 
     void write_string(luabuf* buf, string_view value) {
@@ -196,7 +196,7 @@ namespace luapb{
 
     class pb_field;
     using pb_field_imap = unordered_map<int32_t, pb_field*>;
-    using pb_field_smap = unordered_map<string, pb_field*>;
+    using pb_field_smap = unordered_map<string_view, pb_field*>;
     class pb_message {
     public:
         ~pb_message();
@@ -224,13 +224,13 @@ namespace luapb{
     };
     thread_local pb_descriptor descriptor;
 
-    pb_message* find_message(string& name) {
+    pb_message* find_message(const char* name) {
         auto it = descriptor.messages.find(name);
         if (it != descriptor.messages.end()) return it->second;
         return nullptr;
     }
 
-    pb_enum* find_enum(string& name) {
+    pb_enum* find_enum(const char* name) {
         auto it = descriptor.enums.find(name);
         if (it != descriptor.enums.end()) return it->second;
         return nullptr;
@@ -245,7 +245,6 @@ namespace luapb{
         field_type type;
         wiretype wtype;
         int32_t oneof_index = -1;
-        pb_enum* penum = nullptr;
         pb_message* message = nullptr;
         bool packed = false;
 
@@ -254,16 +253,9 @@ namespace luapb{
         pb_message* get_message() {
             if (message) return message;
             if (type == field_type::TYPE_MESSAGE && !type_name.empty()) {
-                message = find_message(type_name);
+                message = find_message(type_name.c_str());
             }
             return message;
-        }
-        pb_enum* get_enum() {
-            if (penum) return penum;
-            if (type == field_type::TYPE_ENUM && !type_name.empty()) {
-                penum = find_enum(type_name);
-            }
-            return penum;
         }
     };
 
@@ -281,7 +273,7 @@ namespace luapb{
         return find_field_by_number(msg, tag >> 3);
     }
 
-    pb_field* find_field(pb_message* msg, string name) {
+    pb_field* find_field(pb_message* msg, const char* name) {
         auto it = msg->sfields.find(name);
         if (it != msg->sfields.end()) return it->second;
         return nullptr;
@@ -300,7 +292,7 @@ namespace luapb{
             auto bmap = field->is_map(), brepeated = field->is_repeated();
             if (brepeated || bmap) {
                 lua_createtable(L, brepeated ? 4 : 0, bmap ? 4 : 0);
-                lua_setfield(L, -2, name.c_str());
+                lua_setfield(L, -2, name.data());
                 continue;
             }
         }
@@ -319,7 +311,7 @@ namespace luapb{
                     case field_type::TYPE_STRING: lua_pushstring(L, ""); break;
                     default: lua_pushinteger(L, 0); break;
                 }
-                lua_setfield(L, -2, name.c_str());
+                lua_setfield(L, -2, name.data());
             }
             lua_setfield(L, -2, "__index");
         }
@@ -341,7 +333,7 @@ namespace luapb{
             case field_type::TYPE_UINT64: lua_pushinteger(L, read_varint<uint64_t>(slice)); break;
             case field_type::TYPE_SINT32: lua_pushinteger(L, decode_sint(read_varint<uint32_t>(slice))); break;
             case field_type::TYPE_SINT64: lua_pushinteger(L, decode_sint(read_varint<uint64_t>(slice))); break;
-            case field_type::TYPE_SFIXED32: lua_pushinteger(L, decode_sint(read_fixtype<uint64_t>(slice))); break;
+            case field_type::TYPE_SFIXED32: lua_pushinteger(L, decode_sint(read_fixtype<uint32_t>(slice))); break;
             case field_type::TYPE_SFIXED64: lua_pushinteger(L, decode_sint(read_fixtype<uint64_t>(slice))); break;
             case field_type::TYPE_ENUM: lua_pushinteger(L, read_varint<uint32_t>(slice)); break;
             case field_type::TYPE_MESSAGE: {
@@ -352,7 +344,7 @@ namespace luapb{
             case field_type::TYPE_BYTES:
             case field_type::TYPE_STRING: {
                 auto s = read_string(slice);
-                lua_pushlstring(L, s.c_str(), s.size());
+                lua_pushlstring(L, s.data(), s.size());
                 break;
             }
             default: throw length_error("decode_field invalid field_type");
@@ -452,7 +444,7 @@ namespace luapb{
 
     void encode_field(luabuf* buff, pb_field* field, pbvariant&& val) {
         switch (field->type) {
-        case field_type::TYPE_FLOAT: write_fixtype<float>(buff, std::get<lua_Number>(val)); break;
+            case field_type::TYPE_FLOAT: write_fixtype<float>(buff, std::get<lua_Number>(val)); break;
             case field_type::TYPE_DOUBLE: write_fixtype<double>(buff, std::get<lua_Number>(val)); break;
             case field_type::TYPE_FIXED32: write_fixtype<int32_t>(buff, std::get<lua_Integer>(val)); break;
             case field_type::TYPE_FIXED64: write_fixtype<int64_t>(buff, std::get<lua_Integer>(val)); break;
@@ -686,7 +678,7 @@ namespace luapb{
     }
 
     int pb_enums(lua_State* L) {
-        vector<string> enums;
+        vector<string_view> enums;
         for (auto& [name, _] : descriptor.enums) {
             enums.emplace_back(name);
         }
@@ -694,15 +686,15 @@ namespace luapb{
     }
 
     int pb_messages(lua_State* L) {
-        map<string, string> messages;
+        map<string_view, string_view> messages;
         for (auto& [name, message] : descriptor.messages) {
             messages.emplace(name, message->name);
         }
         return luakit::variadic_return(L, messages);
     }
 
-    int pb_fields(lua_State* L, string fulname) {
-        map<string, int> fields;
+    int pb_fields(lua_State* L, const char* fulname) {
+        map<string_view, int> fields;
         auto message = find_message(fulname);
         if (message) {
             for (auto& [name, field] : message->sfields) {

@@ -19,10 +19,10 @@
 - 性能：lua-protobuf性能对比，测试不是很充分，仅做参考，release/O2编译
   | 平台 | 库  | 编译选项 | 1W次编解码    | 10W次编解码 | 100W次编解码
   |----------|-----------|-----------|-----------|--------|-----|
-  | Win11| luapb | -O2 | 40ms   | 407ms   | 3967ms
-  | Win11| lua-protobuf | -O2  | 80ms   | 688ms   | 6887ms
-  | Debian10| luapb | -O2 | 56ms   | 563ms   | 5637ms
-  | Debian10| lua-protobuf | -O2  | 87ms   | 867ms   | 8535ms
+  | Win11(vs2022)| luapb | -O2 | 75ms   | 752ms   | 7544msi
+  | Win11(vs2022)| lua-protobuf | -O2  | 163ms   | 1485ms   | 14744ms
+  | Debian11(GCC9)| luapb | -O2 | 85ms   | 840ms   | 8441ms
+  | Debian11(GCC9)| lua-protobuf | -O2  | 144ms   | 1466ms   | 14563ms
 
 # 用法
 
