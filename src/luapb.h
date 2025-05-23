@@ -448,7 +448,7 @@ namespace luapb{
             case field_type::TYPE_DOUBLE: write_fixtype<double>(buff, std::get<lua_Number>(val)); break;
             case field_type::TYPE_FIXED32: write_fixtype<int32_t>(buff, std::get<lua_Integer>(val)); break;
             case field_type::TYPE_FIXED64: write_fixtype<int64_t>(buff, std::get<lua_Integer>(val)); break;
-            case field_type::TYPE_BOOL: write_varint<int32_t>(buff, std::get<lua_Integer>(val)); break;
+            case field_type::TYPE_BOOL: write_varint<uint32_t>(buff, std::get<lua_Integer>(val)); break;
             //int32, int64的负数会被视为 64 位无符号整数，因此使用uint64_t去生成varint
             case field_type::TYPE_INT32: write_varint<uint64_t>(buff, std::get<lua_Integer>(val)); break;
             case field_type::TYPE_INT64: write_varint<uint64_t>(buff, std::get<lua_Integer>(val)); break;
@@ -462,7 +462,7 @@ namespace luapb{
             case field_type::TYPE_BYTES: write_string(buff, std::get<string_view>(val)); break;
             case field_type::TYPE_STRING: write_string(buff, std::get<string_view>(val)); break;
             case field_type::TYPE_MESSAGE: write_len_prefixed(buff, std::get<slice*>(val)); break;
-            default: throw lua_exception("encode failed: %s use unsuppert field type!", field->name);
+            default: throw lua_exception("encode failed: %s use unsuppert field type!", field->name.c_str());
         }
     }
 
