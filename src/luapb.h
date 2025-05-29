@@ -75,9 +75,8 @@ namespace luapb{
 
     template<typename T>
     int64_t decode_sint(T val) {
-        using signedt = typename std::make_signed<T>::type;
-        signedt ival = static_cast<signedt>(val);
-        return (ival >> 1) ^ -(ival & 1);
+        int64_t mask = static_cast<int64_t>(val & 1) * -1;
+        return (val >> 1) ^ mask;
     }
 
     template<typename T>
@@ -112,7 +111,6 @@ namespace luapb{
         throw length_error("read_varint invalid binrary");
     }
 
-    //需确保T是无符号
     template<typename T>
     void write_varint(luabuf* buf, T val) {
         size_t len = 0;
@@ -323,8 +321,8 @@ namespace luapb{
         switch (field->type) {
             case field_type::TYPE_FLOAT: lua_pushnumber(L, read_fixtype<float>(slice)); break;
             case field_type::TYPE_DOUBLE: lua_pushnumber(L, read_fixtype<double>(slice)); break;
-            case field_type::TYPE_FIXED32: lua_pushinteger(L, read_fixtype<int32_t>(slice)); break;
-            case field_type::TYPE_FIXED64: lua_pushinteger(L, read_fixtype<int64_t>(slice)); break;
+            case field_type::TYPE_FIXED32: lua_pushinteger(L, read_fixtype<uint32_t>(slice)); break;
+            case field_type::TYPE_FIXED64: lua_pushinteger(L, read_fixtype<uint64_t>(slice)); break;
             case field_type::TYPE_BOOL: lua_pushboolean(L, read_varint<uint32_t>(slice)); break;
             // TYPE_INT32在负数的时候，会被扩展位uint64编码，因此使用int64_t去解码
             case field_type::TYPE_INT32: lua_pushinteger(L, read_varint<int64_t>(slice)); break;
@@ -333,8 +331,8 @@ namespace luapb{
             case field_type::TYPE_UINT64: lua_pushinteger(L, read_varint<uint64_t>(slice)); break;
             case field_type::TYPE_SINT32: lua_pushinteger(L, decode_sint(read_varint<uint32_t>(slice))); break;
             case field_type::TYPE_SINT64: lua_pushinteger(L, decode_sint(read_varint<uint64_t>(slice))); break;
-            case field_type::TYPE_SFIXED32: lua_pushinteger(L, decode_sint(read_fixtype<uint32_t>(slice))); break;
-            case field_type::TYPE_SFIXED64: lua_pushinteger(L, decode_sint(read_fixtype<uint64_t>(slice))); break;
+            case field_type::TYPE_SFIXED32: lua_pushinteger(L, read_fixtype<int32_t>(slice)); break;
+            case field_type::TYPE_SFIXED64: lua_pushinteger(L, read_fixtype<int64_t>(slice)); break;
             case field_type::TYPE_ENUM: lua_pushinteger(L, read_varint<uint32_t>(slice)); break;
             case field_type::TYPE_MESSAGE: {
                 auto mslice = read_len_prefixed(slice);
@@ -446,18 +444,18 @@ namespace luapb{
         switch (field->type) {
             case field_type::TYPE_FLOAT: write_fixtype<float>(buff, std::get<lua_Number>(val)); break;
             case field_type::TYPE_DOUBLE: write_fixtype<double>(buff, std::get<lua_Number>(val)); break;
-            case field_type::TYPE_FIXED32: write_fixtype<int32_t>(buff, std::get<lua_Integer>(val)); break;
-            case field_type::TYPE_FIXED64: write_fixtype<int64_t>(buff, std::get<lua_Integer>(val)); break;
+            case field_type::TYPE_FIXED32: write_fixtype<uint32_t>(buff, std::get<lua_Integer>(val)); break;
+            case field_type::TYPE_FIXED64: write_fixtype<uint64_t>(buff, std::get<lua_Integer>(val)); break;
             case field_type::TYPE_BOOL: write_varint<uint32_t>(buff, std::get<lua_Integer>(val)); break;
             //int32, int64的负数会被视为 64 位无符号整数，因此使用uint64_t去生成varint
             case field_type::TYPE_INT32: write_varint<uint64_t>(buff, std::get<lua_Integer>(val)); break;
             case field_type::TYPE_INT64: write_varint<uint64_t>(buff, std::get<lua_Integer>(val)); break;
             case field_type::TYPE_UINT32: write_varint<uint32_t>(buff, std::get<lua_Integer>(val)); break;
             case field_type::TYPE_UINT64: write_varint<uint64_t>(buff, std::get<lua_Integer>(val)); break;
-            case field_type::TYPE_SINT32: write_varint<uint32_t>(buff, encode_sint(std::get<lua_Integer>(val))); break;
-            case field_type::TYPE_SINT64: write_varint<uint64_t>(buff, encode_sint(std::get<lua_Integer>(val))); break;
-            case field_type::TYPE_SFIXED32: write_fixtype<uint32_t>(buff, encode_sint(std::get<lua_Integer>(val))); break;
-            case field_type::TYPE_SFIXED64: write_fixtype<uint64_t>(buff, encode_sint(std::get<lua_Integer>(val))); break;
+            case field_type::TYPE_SINT32: write_varint<uint32_t>(buff, encode_sint<int32_t>(std::get<lua_Integer>(val))); break;
+            case field_type::TYPE_SINT64: write_varint<uint64_t>(buff, encode_sint<int64_t>(std::get<lua_Integer>(val))); break;
+            case field_type::TYPE_SFIXED32: write_fixtype<int32_t>(buff, std::get<lua_Integer>(val)); break;
+            case field_type::TYPE_SFIXED64: write_fixtype<int64_t>(buff, std::get<lua_Integer>(val)); break;
             case field_type::TYPE_ENUM: write_varint<uint32_t>(buff, std::get<lua_Integer>(val)); break;
             case field_type::TYPE_BYTES: write_string(buff, std::get<string_view>(val)); break;
             case field_type::TYPE_STRING: write_string(buff, std::get<string_view>(val)); break;

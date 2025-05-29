@@ -129,10 +129,9 @@ namespace luapb {
 
     int load_pb(lua_State* L) {
         size_t len;
-        auto data = (uint8_t*)lua_tolstring(L, 1, &len);
-        auto buf = luakit::get_buff();
-        buf->push_data(data, len);
-        read_file_descriptor_set(buf->get_slice());
+        auto data = lua_tolstring(L, 1, &len);
+        auto dslice = slice((uint8_t*)data, len);
+        read_file_descriptor_set(&dslice);
         lua_pushboolean(L, 1);
         return 1;
     }
@@ -144,8 +143,8 @@ namespace luapb {
         auto len = filesystem::file_size(filename);
         auto lbuf = buf->peek_space(len);
         fread(lbuf, 1, len, fp);
-        buf->pop_space(len);
-        read_file_descriptor_set(buf->get_slice());
+        auto fslice = slice(lbuf, len);
+        read_file_descriptor_set(&fslice);
         lua_pushboolean(L, 1);
         fclose(fp);
         return 1;
