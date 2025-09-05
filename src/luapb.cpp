@@ -7,25 +7,33 @@ using namespace luakit;
 
 namespace luapb {
 
-    thread_local std::map<uint32_t, pb_message*>    pb_cmd_ids;
-    thread_local std::map<std::string, pb_message*> pb_cmd_names;
-    thread_local std::map<std::string, uint32_t>    pb_cmd_indexs;
+    thread_local std::unordered_map<uint32_t, pb_message*>    pb_cmd_ids;
+    thread_local std::unordered_map<std::string, pb_message*> pb_cmd_names;
+    thread_local std::unordered_map<std::string, uint32_t>    pb_cmd_indexs;
 
     #pragma pack(1)
     struct pb_header {
-        uint16_t    len;            // 整个包的长度
-        uint8_t     flag;           // 标志位
-        uint8_t     type;           // 消息类型
+        union {
+            uint32_t length;
+            struct {
+                uint8_t flag :8;    //标志位8bit
+                uint32_t len :24;   //长度24bit(16M)
+            } head;
+        };
         uint16_t    cmd_id;         // 协议ID
         uint16_t    session_id;     // sessionId
+        uint8_t     type;           // 消息类型
         uint8_t     crc8;           // crc8
+    };
+    struct grpc_header {
+        uint8_t compose;            //是否压缩
+        uint32_t length;            //长度
     };
     #pragma pack()
 
     pb_message* pbmsg_from_cmdid(size_t cmd_id) {
-        auto it = pb_cmd_ids.find(cmd_id);
-        if (it == pb_cmd_ids.end()) return nullptr;
-        return it->second;
+        if (auto it = pb_cmd_ids.find(cmd_id); it != pb_cmd_ids.end()) return it->second;
+        return nullptr;
     }
 
     pb_message* pbmsg_from_stack(lua_State* L, int index, uint16_t* cmd_id = nullptr) {
@@ -61,11 +69,10 @@ namespace luapb {
             if (!m_slice) return 0;
             pb_header* header =(pb_header*)m_slice->peek(sizeof(pb_header));
             if (!header) return 0;
-            m_packet_len = header->len;
-            if (m_packet_len < sizeof(pb_header)) return -1;
-            if (m_packet_len >= 0xffff) return -1;
-            if (!m_slice->peek(m_packet_len)) return 0;
-            if (m_packet_len > data_len) return 0;
+            uint32_t len = header->head.len;
+            if (len < sizeof(pb_header)) return -1;
+            if (!m_slice->peek(len)) return 0;
+            m_packet_len = len;
             return m_packet_len;
         }
 
@@ -78,22 +85,21 @@ namespace luapb {
             pb_message* msg = pbmsg_from_stack(L, index++, &header.cmd_id);
             if (msg == nullptr) luaL_error(L, "invalid pb cmd type");
             //other
-            header.flag = (uint8_t)lua_tointeger(L, index++);
+            header.head.flag = (uint8_t)lua_tointeger(L, index++);
             header.type = (uint8_t)lua_tointeger(L, index++);
             header.crc8 = (uint8_t)lua_tointeger(L, index++);
             //encode
-            auto buf = luakit::get_buff();
-            buf->clean();
-            buf->hold_place(sizeof(pb_header));
+            m_buf->clean();
+            m_buf->hold_place(sizeof(pb_header));
             try {
-                encode_message(L, buf, msg);
+                encode_message(L, index, m_buf, msg);
             } catch (const exception& e) {
                 luaL_error(L, e.what());
             }
-            *len = buf->size();
-            header.len = *len;
-            buf->copy(0, (uint8_t*)&header, sizeof(pb_header));
-            return buf->head();
+            *len = m_buf->size();
+            header.head.len = *len;
+            m_buf->copy(0, (uint8_t*)&header, sizeof(pb_header));
+            return m_buf->head();
         }
 
         virtual size_t decode(lua_State* L) {
@@ -104,7 +110,7 @@ namespace luapb {
             lua_pushinteger(L, m_slice->size());
             lua_pushinteger(L, header->session_id);
             lua_pushinteger(L, header->cmd_id);
-            lua_pushinteger(L, header->flag);
+            lua_pushinteger(L, header->head.flag);
             lua_pushinteger(L, header->type);
             lua_pushinteger(L, header->crc8);
             //cmd_id
@@ -121,8 +127,64 @@ namespace luapb {
         }
     };
 
+    class grpccodec : public codec_base {
+    public:
+        virtual int load_packet(size_t data_len) {
+            if (!m_slice) return 0;
+            grpc_header* header = (grpc_header*)m_slice->peek(sizeof(grpc_header));
+            if (!header) return 0;
+            uint32_t len = byteswap(header->length);
+            if (!m_slice->peek(len, sizeof(grpc_header))) return 0;
+            m_packet_len = len + sizeof(grpc_header);
+            return m_packet_len;
+        }
+
+        virtual uint8_t* encode(lua_State* L, int index, size_t* len) {
+            m_buf->clean();
+            m_buf->hold_place(sizeof(grpc_header));
+            //input_type
+            auto input_type = lua_tostring(L, index + 1);
+            pb_message* msg = find_message(input_type);
+            if (!msg) luaL_error(L, "invalid input_type: %s", input_type);
+            try {
+                encode_message(L, index, m_buf, msg);
+            } catch (const exception& e) {
+                luaL_error(L, e.what());
+            }
+            //header
+            uint32_t size = m_buf->size() - sizeof(grpc_header);
+            grpc_header header = { .compose = 0, .length = byteswap(size) };
+            m_buf->copy(0, (uint8_t*)&header, sizeof(grpc_header));
+            return m_buf->data(len);
+        }
+
+        virtual size_t decode(lua_State* L) {
+            //output_type
+            auto output_type = lua_tostring(L, -1);
+            lua_pop(L, 1);
+            //header
+            int top = lua_gettop(L);
+            grpc_header* header = (grpc_header*)m_slice->erase(sizeof(grpc_header));
+            //msg
+            pb_message* msg = find_message(output_type);
+            if (!msg) throw lua_exception("output_type : %s not define", output_type);
+            try {
+                decode_message(L, m_slice, msg);
+            } catch (...) {
+                throw lua_exception("output_type: %s decode failed: %s", output_type, lua_tostring(L, -1));
+            }
+            return lua_gettop(L) - top;
+        }
+    };
+
     inline codec_base* pb_codec() {
         pbcodec* codec = new pbcodec();
+        codec->set_buff(luakit::get_buff());
+        return codec;
+    }
+
+    inline codec_base* grpc_codec() {
+        grpccodec* codec = new grpccodec();
         codec->set_buff(luakit::get_buff());
         return codec;
     }
@@ -131,7 +193,7 @@ namespace luapb {
         size_t len;
         auto data = lua_tolstring(L, 1, &len);
         auto dslice = slice((uint8_t*)data, len);
-        read_file_descriptor_set(&dslice);
+        read_file_descriptor_set(L, &dslice);
         lua_pushboolean(L, 1);
         return 1;
     }
@@ -144,7 +206,7 @@ namespace luapb {
         auto lbuf = buf->peek_space(len);
         fread(lbuf, 1, len, fp);
         auto fslice = slice(lbuf, len);
-        read_file_descriptor_set(&fslice);
+        read_file_descriptor_set(L, &fslice);
         lua_pushboolean(L, 1);
         fclose(fp);
         return 1;
@@ -157,7 +219,7 @@ namespace luapb {
         auto buf = luakit::get_buff();
         buf->clean();
         try {
-            encode_message(L, buf, msg);
+            encode_message(L, 2, buf, msg);
         } catch (const exception& e){
             luaL_error(L, e.what());
         }
@@ -181,8 +243,7 @@ namespace luapb {
 
     int pb_enum_id(lua_State* L) {
         auto efullname = lua_tostring(L, 1);
-        auto penum = find_enum(efullname);
-        if (penum) {
+        if (auto penum = find_enum(efullname); penum) {
             if (lua_isstring(L, 2)) {
                 auto key = lua_tostring(L, 2);
                 auto it = penum->kvpair.find(key);
@@ -203,6 +264,14 @@ namespace luapb {
         return 0;
     }
 
+    void pb_option(string_view otype, bool enable) {
+        if (otype == "encode_default") {
+            descriptor.encode_default = enable;
+        } else if (otype == "use_mteatable") {
+            descriptor.use_mteatable = enable;
+        }
+    }
+
     luakit::lua_table open_luapb(lua_State* L) {
         kit_state kit_state(L);
         lua_table luapb = kit_state.new_table("protobuf");
@@ -214,11 +283,13 @@ namespace luapb {
         luapb.set_function("encode", pb_encode);
         luapb.set_function("pbcodec", pb_codec);
         luapb.set_function("fields", pb_fields);
+        luapb.set_function("option", pb_option);
         luapb.set_function("loadfile", load_file);
         luapb.set_function("messages", pb_messages);
+        luapb.set_function("services", pb_services);
+        luapb.set_function("grpccodec", grpc_codec);
         luapb.set_function("bind_cmd", [](uint32_t cmd_id, std::string name, std::string fullname) {
-            auto message = find_message(fullname.c_str());
-            if (message) {
+            if (auto message = find_message(fullname.c_str()); message) {
                 pb_cmd_names[name] = message;
                 pb_cmd_ids[cmd_id] = message;
                 pb_cmd_indexs[name] = cmd_id;
